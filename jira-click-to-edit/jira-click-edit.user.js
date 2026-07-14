@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Jira Click-to-Edit ONLY via Pen Icon (with Save/Cancel fix)
 // @namespace    http://tampermonkey.net/
-// @version      0.7
-// @description  Deaktiviert Klicks/Doppelklicks im Textbereich. Editieren startet ausschließlich durch Klick auf das Stift-Icon. Speichern/Abbrechen funktionieren weiterhin.
+// @version      0.8
+// @description  Deaktiviert Klicks/Doppelklicks im Textbereich. Editieren startet ausschließlich durch Klick auf das Stift-Icon. Speichern/Abbrechen funktionieren weiterhin. Hyperlinks öffnen sich im neuen Fenster.
 // @author       You
 // @include      /^https:\/\/jira\..*\/browse\/.*$/
 // @grant        none
@@ -16,6 +16,19 @@
         const editable = event.target.closest('h1.editable-field, div.editable-field, span.editable-field');
 
         if (editable) {
+            // NEU: Handelt es sich um einen Hyperlink?
+            const link = event.target.closest('a[href]');
+            if (link) {
+                // Link in einem neuen Fenster/Tab öffnen
+                window.open(link.href, '_blank', 'noopener,noreferrer');
+
+                // Verhindern, dass Jira das Inline-Editing startet oder der Standard-Link-Klick ausgeführt wird
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                return;
+            }
+
             // Ausnahmen: Wann darf geklickt werden?
             const isPenIcon = event.target.closest('span.overlay-icon, .icon-edit, .aui-icon-small, .aui-iconfont-edit');
             const isSaveButton = event.target.closest('button[type="submit"], .submit, .save-options, [data-testid="comment-save-button"]');
@@ -47,6 +60,15 @@
     document.body.addEventListener('dblclick', function(event) {
         const editable = event.target.closest('h1.editable-field, div.editable-field, span.editable-field');
         if (editable) {
+            // NEU: Wenn auf einen Link doppelgeklickt wird, ebenfalls blockieren (damit kein Editor aufgeht)
+            const link = event.target.closest('a[href]');
+            if (link) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                return;
+            }
+
             const isToolbarOrTabs = event.target.closest(
                 '.wiki-edit-toolbar, .aui-toolbar, .aui-toolbar2, .editor-toggle-tabs, .wiki-edit-tabs, .editor-toggle-button, ' +
                 'li[data-mode="wysiwyg"], li[data-mode="source"], ' +
