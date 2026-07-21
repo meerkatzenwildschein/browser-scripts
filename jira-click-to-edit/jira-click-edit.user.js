@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Jira Click-to-Edit ONLY via Pen Icon (with Save/Cancel fix)
+// @name         Jira Click-to-Edit ONLY via Pen Icon
 // @namespace    http://tampermonkey.net/
-// @version      0.8
-// @description  Deaktiviert Klicks/Doppelklicks im Textbereich. Editieren startet ausschließlich durch Klick auf das Stift-Icon. Speichern/Abbrechen funktionieren weiterhin. Hyperlinks öffnen sich im neuen Fenster.
+// @version      1.1
+// @description  Editieren nur über das Stift-Icon. Toolbar und Menüs bleiben bedienbar. Textlinks öffnen in einem neuen Tab.
 // @author       You
 // @include      /^https:\/\/jira\..*\/browse\/.*$/
 // @grant        none
@@ -11,78 +11,231 @@
 (function() {
     'use strict';
 
-    document.body.addEventListener('click', function(event) {
-        // Befinden wir uns innerhalb eines editierbaren Feldes?
-        const editable = event.target.closest('h1.editable-field, div.editable-field, span.editable-field');
+    /*
+     * Toolbar, Tabs, Dropdown-Menüs und Editor-Popups.
+     * Jira hängt geöffnete Menüs teilweise außerhalb der Toolbar
+     * direkt unter document.body ein.
+     */
+    const EDITOR_UI_SELECTOR = [
+        // Editor-Toolbar
+        '.wiki-edit-toolbar',
+        '.aui-toolbar',
+        '.aui-toolbar2',
+        '.editor-toggle-tabs',
+        '.wiki-edit-tabs',
+        '.editor-toggle-button',
 
-        if (editable) {
-            // NEU: Handelt es sich um einen Hyperlink?
-            const link = event.target.closest('a[href]');
-            if (link) {
-                // Link in einem neuen Fenster/Tab öffnen
-                window.open(link.href, '_blank', 'noopener,noreferrer');
+        // Visuell-/Text-Tabs
+        'li[data-mode="wysiwyg"]',
+        'li[data-mode="source"]',
 
-                // Verhindern, dass Jira das Inline-Editing startet oder der Standard-Link-Klick ausgeführt wird
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-                return;
-            }
+        // Jira-/AUI-Dropdowns und Popup-Elemente
+        '.aui-dropdown',
+        '.aui-dropdown2',
+        '.aui-dropdown2-section',
+        '.aui-dropdown2-in-memory',
+        '.aui-inline-dialog',
+        '.aui-dialog',
+        '.aui-dialog2',
+        '.aui-layer',
 
-            // Ausnahmen: Wann darf geklickt werden?
-            const isPenIcon = event.target.closest('span.overlay-icon, .icon-edit, .aui-icon-small, .aui-iconfont-edit');
-            const isSaveButton = event.target.closest('button[type="submit"], .submit, .save-options, [data-testid="comment-save-button"]');
-            const isCancelButton = event.target.closest('.cancel, button.cancel, [data-testid="comment-cancel-button"]');
+        // Standardrollen für Menüs und Auswahllisten
+        '[role="menu"]',
+        '[role="menuitem"]',
+        '[role="listbox"]',
+        '[role="option"]',
 
-            // NEU: Tabs ("Visuell"/"Text") und die Formatierungs-Toolbar oben erlauben
-            const isToolbarOrTabs = event.target.closest(
-                '.wiki-edit-toolbar, .aui-toolbar, .aui-toolbar2, .editor-toggle-tabs, .wiki-edit-tabs, .editor-toggle-button, ' +
-                'li[data-mode="wysiwyg"], li[data-mode="source"], ' +
-                '[data-testid="ak-editor-main-toolbar"], [data-testid="editor-floating-toolbar"], [data-testid="editor-toolbar"]'
-            );
+        // Neuere Jira-Editor-Komponenten
+        '[data-testid="ak-editor-main-toolbar"]',
+        '[data-testid="editor-floating-toolbar"]',
+        '[data-testid="editor-toolbar"]',
+        '[data-testid*="dropdown-menu"]',
+        '[data-testid*="select-menu"]',
+        '[data-testid*="editor-popup"]'
+    ].join(', ');
 
-            // NEU: Der eigentliche Textbereich / Textarea zum Schreiben erlauben
-            const isEditableArea = event.target.closest('textarea, .textarea, rich-editor, [contenteditable="true"], .rte-container');
+    const EDITABLE_SELECTOR =
+        'h1.editable-field, div.editable-field, span.editable-field';
 
-            // NEU: Wenn das Feld bereits aktiv editiert wird (Klasse "active" vorhanden), blockieren wir keine Klicks mehr
-            const isAlreadyActive = editable.classList.contains('active');
+    const EDITABLE_AREA_SELECTOR = [
+        'textarea',
+        '.textarea',
+        'rich-editor',
+        '[contenteditable="true"]',
+        '.rte-container'
+    ].join(', ');
 
-            // Wenn es keines der erlaubten Elemente ist und das Feld noch nicht aktiv editiert wird: Blockieren!
-            if (!isPenIcon && !isSaveButton && !isCancelButton && !isToolbarOrTabs && !isEditableArea && !isAlreadyActive) {
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-            }
+    /**
+     * Prüft, ob der Klick zu einer Toolbar, einem Menü,
+     * einem Editor-Tab oder einem Editor-Popup gehört.
+     */
+    function isEditorUiElement(target) {
+        return target instanceof Element &&
+            target.closest(EDITOR_UI_SELECTOR) !== null;
+    }
+
+    /**
+     * Jira verwendet häufig Links als Schaltflächen.
+     *
+     * Beispiele:
+     *   href="#"
+     *   href="javascript:void(0)"
+     *   role="button"
+     *   role="menuitem"
+     *
+     * Solche Links dürfen nicht mit window.open() geöffnet werden.
+     */
+    function isActionLink(link) {
+        if (!link) {
+            return false;
         }
-    }, true); // Capturing-Phase fängt Klicks frühzeitig ab
 
-    // Doppelklicks im Textbereich blockieren, AUßER wenn man bereits aktiv editiert oder in den Editor klickt
-    document.body.addEventListener('dblclick', function(event) {
-        const editable = event.target.closest('h1.editable-field, div.editable-field, span.editable-field');
-        if (editable) {
-            // NEU: Wenn auf einen Link doppelgeklickt wird, ebenfalls blockieren (damit kein Editor aufgeht)
-            const link = event.target.closest('a[href]');
-            if (link) {
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
+        const href = (link.getAttribute('href') || '').trim().toLowerCase();
+        const role = (link.getAttribute('role') || '').trim().toLowerCase();
+
+        return (
+            href === '' ||
+            href === '#' ||
+            href.startsWith('#') ||
+            href.startsWith('javascript:') ||
+            role === 'button' ||
+            role === 'menuitem' ||
+            link.hasAttribute('aria-haspopup') ||
+            link.hasAttribute('data-aui-trigger') ||
+            link.classList.contains('aui-button')
+        );
+    }
+
+    document.body.addEventListener('click', function(event) {
+        const target = event.target;
+
+        if (!(target instanceof Element)) {
+            return;
+        }
+
+        /*
+         * Toolbar, Dropdown-Menü und Editor-Popup:
+         *
+         * Nichts verhindern und das Ereignis vollständig an Jira
+         * weitergeben. Insbesondere kein window.open() ausführen.
+         */
+        if (isEditorUiElement(target)) {
+            return;
+        }
+
+        const editable = target.closest(EDITABLE_SELECTOR);
+
+        if (!editable) {
+            return;
+        }
+
+        const link = target.closest('a[href]');
+
+        if (link) {
+            /*
+             * Jira-Aktionslinks unverändert weitergeben.
+             * Diese Links steuern beispielsweise Menüs oder Dialoge.
+             */
+            if (isActionLink(link)) {
                 return;
             }
 
-            const isToolbarOrTabs = event.target.closest(
-                '.wiki-edit-toolbar, .aui-toolbar, .aui-toolbar2, .editor-toggle-tabs, .wiki-edit-tabs, .editor-toggle-button, ' +
-                'li[data-mode="wysiwyg"], li[data-mode="source"], ' +
-                '[data-testid="ak-editor-main-toolbar"], [data-testid="editor-floating-toolbar"], [data-testid="editor-toolbar"]'
-            );
-            const isEditableArea = event.target.closest('textarea, .textarea, rich-editor, [contenteditable="true"], .rte-container');
-            const isAlreadyActive = editable.classList.contains('active');
+            /*
+             * Ein normaler Link im angezeigten Textbereich wird
+             * ausdrücklich in einem neuen Tab geöffnet.
+             */
+            window.open(link.href, '_blank', 'noopener,noreferrer');
 
-            // Doppelklick nur blockieren, wenn das Feld inaktiv ist und nicht auf Editor-Elemente geklickt wurde
-            if (!isToolbarOrTabs && !isEditableArea && !isAlreadyActive) {
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-            }
+            // Standardnavigation und Start des Inline-Editors verhindern.
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            return;
+        }
+
+        const isPenIcon = target.closest(
+            'span.overlay-icon, .icon-edit, ' +
+            '.aui-icon-small, .aui-iconfont-edit'
+        );
+
+        const isSaveButton = target.closest(
+            'button[type="submit"], .submit, .save-options, ' +
+            '[data-testid="comment-save-button"]'
+        );
+
+        const isCancelButton = target.closest(
+            '.cancel, button.cancel, ' +
+            '[data-testid="comment-cancel-button"]'
+        );
+
+        const isEditableArea = target.closest(EDITABLE_AREA_SELECTOR);
+        const isAlreadyActive = editable.classList.contains('active');
+
+        /*
+         * Klick auf ein inaktives Textfeld blockieren.
+         * Alle notwendigen Editor-Bedienelemente bleiben erlaubt.
+         */
+        if (
+            !isPenIcon &&
+            !isSaveButton &&
+            !isCancelButton &&
+            !isEditableArea &&
+            !isAlreadyActive
+        ) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+    }, true);
+
+    document.body.addEventListener('dblclick', function(event) {
+        const target = event.target;
+
+        if (!(target instanceof Element)) {
+            return;
+        }
+
+        /*
+         * Doppelklicks auf Toolbar, Menüs und Popup-Elemente
+         * unverändert Jira überlassen.
+         */
+        if (isEditorUiElement(target)) {
+            return;
+        }
+
+        const editable = target.closest(EDITABLE_SELECTOR);
+
+        if (!editable) {
+            return;
+        }
+
+        const link = target.closest('a[href]');
+
+        /*
+         * Jira-Aktionslinks nicht blockieren.
+         */
+        if (link && isActionLink(link)) {
+            return;
+        }
+
+        /*
+         * Bei normalen Textlinks verhindern, dass durch den
+         * Doppelklick zusätzlich der Inline-Editor geöffnet wird.
+         */
+        if (link) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            return;
+        }
+
+        const isEditableArea = target.closest(EDITABLE_AREA_SELECTOR);
+        const isAlreadyActive = editable.classList.contains('active');
+
+        if (!isEditableArea && !isAlreadyActive) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
         }
     }, true);
 })();
